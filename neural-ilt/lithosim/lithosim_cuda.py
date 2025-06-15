@@ -10,6 +10,46 @@ import torchvision
 from torchvision.transforms import Compose, ToTensor, Scale, Grayscale
 
 
+def generate_zernike_phase(shape, coeffs, device='cpu'):
+    """
+    shape: (H, W)
+    coeffs: список коэффициентов Цернике [a0, a1, ..., aN]
+    Возвращает фазовую маску φ(u, v) размера (H, W)
+    """
+    H, W = shape
+    y, x = torch.meshgrid(torch.linspace(-1, 1, H, device=device),
+                          torch.linspace(-1, 1, W, device=device), indexing='ij')
+    r = torch.sqrt(x**2 + y**2)
+    theta = torch.atan2(y, x)
+    Z = torch.zeros_like(r)
+    
+    def zernike(n, m, r, theta):
+        # Простейшие Цернике: нечеткая имитация
+        if m == 0:
+            return torch.cos(n * theta) * r**n
+        elif m > 0:
+            return torch.cos(m * theta) * r**n
+        else:
+            return torch.sin(-m * theta) * r**n
+
+    # Пример — вручную добавим несколько низших порядков
+    n_m_list = [
+        (0, 0),  # Z0
+        (1, -1), # Z1
+        (1, 1),  # Z2
+        (2, -2), # Z3
+        (2, 0),  # Z4
+        (2, 2),  # Z5
+    ]
+    for i, a in enumerate(coeffs):
+        if i >= len(n_m_list):
+            break
+        n, m = n_m_list[i]
+        Z += a * zernike(n, m, r, theta)
+    
+    return Z
+
+
 def is_bin(filename):
     return any(
         filename.endswith(extension)
@@ -184,7 +224,8 @@ def mask_threshold(intensity_map, threshold):
     return (intensity_map >= threshold).type(torch.cuda.FloatTensor)
 
 def lithosim(image_data, threshold, kernels, weight, wafer_output_path, save_bin_wafer_image,
-             kernels_number=None, avgpool_size=None, dose=1.0, return_binary_wafer=True):
+             kernels_number=None, avgpool_size=None, dose=1.0, return_binary_wafer=True,
+             zernike_coeffs=None):
     r"""
     Lithography simulation main function
     Args:
@@ -201,6 +242,18 @@ def lithosim(image_data, threshold, kernels, weight, wafer_output_path, save_bin
         weight = weight[:kernels_number]
     complex_image_data = tensor_real_to_complex(image_data, dose=dose) # N * 1 * H * W (complex)
     complex_image_data = fft2(complex_image_data) # N * 1 * H * W (complex)
+    
+    # ======= фазовая маска через Цернике ========
+    # zernike_coeffs=[0,0,0,0]
+    if zernike_coeffs is not None:
+        K, H, W = kernels.shape
+        device = kernels.device
+        phase = generate_zernike_phase((H, W), zernike_coeffs, device=device)
+        phase_mask = torch.exp(1j * phase)  # H x W (complex)
+        phase_mask = phase_mask.unsqueeze(0)  # 1 x H x W
+        kernels = kernels * phase_mask  # broadcasting to K x H x W
+    # ============================================
+
     complex_image_data = frequency_multiplication(complex_image_data, kernels) # N * K * H * W (complex)
     complex_image_data = ifft2(complex_image_data) # N * K * H * W (complex)
     intensity_map = tensor_weight_sum(complex_image_data, weight) # N * 1 * H * W (real)

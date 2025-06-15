@@ -1,0 +1,6 @@
+__pycache__
+.vscode
+neural-ilt/lithosim/lithosim_kernels/
+neural-ilt/output/
+neural-ilt/models/
+neural-ilt/dataset/
