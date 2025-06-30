@@ -7,13 +7,13 @@ from PIL import Image
 import torch
 import torch.fft
 import torchvision
-from torchvision.transforms import Compose, ToTensor, Scale, Grayscale
+from torchvision.transforms import Compose, ToTensor, Grayscale
 
 
 def generate_zernike_phase(shape, coeffs, device='cpu'):
     """
     shape: (H, W)
-    coeffs: список коэффициентов Цернике [a0, a1, ..., aN]
+    coeffs: список коэффициентов Цернике [a1, ..., aN_Z], shape (N, N_Z)
     Возвращает фазовую маску φ(u, v) размера (H, W)
     """
     H, W = shape
@@ -21,12 +21,14 @@ def generate_zernike_phase(shape, coeffs, device='cpu'):
                           torch.linspace(-1, 1, W, device=device), indexing='ij')
     r = torch.sqrt(x**2 + y**2)
     theta = torch.atan2(y, x)
-    Z = torch.zeros_like(r)
+
+    N = len(coeffs)
+    Z = torch.zeros_like(r)[None,:].repeat_interleave(N, 0) # N x H x W
     
     def zernike(n, m, r, theta):
         # Простейшие Цернике: нечеткая имитация
         if m == 0:
-            return torch.cos(n * theta) * r**n
+            return r**n
         elif m > 0:
             return torch.cos(m * theta) * r**n
         else:
@@ -41,11 +43,15 @@ def generate_zernike_phase(shape, coeffs, device='cpu'):
         (2, 0),  # Z4
         (2, 2),  # Z5
     ]
-    for i, a in enumerate(coeffs):
+    for i, a in enumerate(coeffs.T):
         if i >= len(n_m_list):
             break
         n, m = n_m_list[i]
-        Z += a * zernike(n, m, r, theta)
+        try:
+            Z += a[:, None, None] * zernike(n, m, r, theta)
+        except:
+            print(a, zernike(n, m, r, theta).shape, Z.shape)
+            assert False
     
     return Z
 
@@ -63,7 +69,7 @@ def kernels_tensor_preprocess(kernels):
     kernels = torch.view_as_complex(kernels)
     return kernels
 
-def kernel_bin_preprocess(root_path, kernel_type, kernels_number=24):
+def kernel_bin_preprocess(root_path, kernel_type, kernels_number=24, verbose: bool = True):
     r"""
     Preprocessing SOCS kenerls
     """
@@ -81,7 +87,8 @@ def kernel_bin_preprocess(root_path, kernel_type, kernels_number=24):
             data = f.read()
             kernels_w = data[3]
             kernels_h = data[7]
-            print("kernel_%d kernels_w: %d, kernels_h:%d" % (i, kernels_w, kernels_h))
+            if verbose:
+                print("kernel_%d kernels_w: %d, kernels_h:%d" % (i, kernels_w, kernels_h))
         with open(kernels_path[i], 'rb') as f:
             data = f.read()
             data = data[20:]
@@ -167,9 +174,9 @@ def frequency_multiplication(data, kernels):
     """
     assert kernels.dtype == torch.cfloat
 
-    ker_num, kernel_height, kernel_width = kernels.shape
-    if len(data.shape) == 4: # data.shape is N * 1 * H * W (complex)
-        kernels = kernels.unsqueeze(0) # 1 * K * H_K * W_K (complex)
+    N, ker_num, kernel_height, kernel_width = kernels.shape
+    if len(data.shape) == 3: # data.shape is N * 1 * H * W (complex)
+        data = data.unsqueeze(1) # N * 1 * H_K * W_K (complex)
 
     data_width = data.shape[-1]
     data_height = data.shape[-2]
@@ -181,18 +188,20 @@ def frequency_multiplication(data, kernels):
     y1 = y0 + kernel_height
 
     # Except image's center, set other value as zero
-    data[..., :y0, :] = 0.0
-    data[..., y1:, :] = 0.0
-    data[..., y0:y1, :x0] = 0.0
-    data[..., y0:y1, x1:] = 0.0
+    # with torch.no_grad():
+    #     data[..., :y0, :] = 0.0
+    #     data[..., y1:, :] = 0.0
+    #     data[..., y0:y1, :x0] = 0.0
+    #     data[..., y0:y1, x1:] = 0.0
 
     # Data dimension expand to 24
     data = data.repeat_interleave(ker_num, dim=-3)  # N * K * H * W (complex)
+    data_new = torch.zeros_like(data)
     
     # Only convolve in the freq-domain image's center
-    data[..., y0:y1, x0:x1] = data[..., y0:y1, x0:x1] * kernels
+    data_new[..., y0:y1, x0:x1] = data[..., y0:y1, x0:x1] * kernels
 
-    return data
+    return data_new
 
 def tensor_weight_sum(data, weight, square_root=False, normalized_weight=False):
     r"""
@@ -221,7 +230,7 @@ def mask_threshold(intensity_map, threshold):
     r"""
     Intensity map to binary wafer
     """
-    return (intensity_map >= threshold).type(torch.cuda.FloatTensor)
+    return (intensity_map >= threshold).float()
 
 def lithosim(image_data, threshold, kernels, weight, wafer_output_path, save_bin_wafer_image,
              kernels_number=None, avgpool_size=None, dose=1.0, return_binary_wafer=True,
@@ -238,25 +247,49 @@ def lithosim(image_data, threshold, kernels, weight, wafer_output_path, save_bin
         tensors, intensity image and binary wafer image
     """
     if kernels_number is not None:
-        kernels = kernels[:kernels_number]
-        weight = weight[:kernels_number]
+        if kernels_number == 0:
+            kernels = tensor_real_to_complex(torch.ones((1,35,35), device=kernels.device))
+            weight = torch.ones((1,), device=weight.device)
+        else:
+            kernels = kernels[:kernels_number]
+            weight = weight[:kernels_number]
     complex_image_data = tensor_real_to_complex(image_data, dose=dose) # N * 1 * H * W (complex)
     complex_image_data = fft2(complex_image_data) # N * 1 * H * W (complex)
+    # print(1, torch.std(complex_image_data))
+    # print(1, complex_image_data.grad_fn)
     
+    kernels = kernels.unsqueeze(0) # 1 x K x H x W
+    # print(2, kernels)
+
     # ======= фазовая маска через Цернике ========
-    # zernike_coeffs=[0,0,0,0]
+    # zernike_coeffs=[0, 0, 0, 0, 0, 0]
     if zernike_coeffs is not None:
-        K, H, W = kernels.shape
+        if len(zernike_coeffs.shape) == 1:
+            zernike_coeffs = zernike_coeffs.unsqueeze(0) # 1 x N_Z
+        # print(3, torch.std(zernike_coeffs))
+
+        _, K, H, W = kernels.shape
         device = kernels.device
         phase = generate_zernike_phase((H, W), zernike_coeffs, device=device)
-        phase_mask = torch.exp(1j * phase)  # H x W (complex)
-        phase_mask = phase_mask.unsqueeze(0)  # 1 x H x W
-        kernels = kernels * phase_mask  # broadcasting to K x H x W
+        phase_mask = torch.exp(1j * phase)  # N x H x W (complex)
+        # print(4, torch.std(phase_mask))
+        phase_mask = phase_mask.unsqueeze(1)  # N x 1 x H x W
+        kernels = kernels * phase_mask  # broadcasting to N x K x H x W
+        # print(5, kernels, phase_mask, sep='\n')
+        # print(2, kernels.grad_fn)
+        # if save_bin_wafer_image == True:
+        #     phases = torch.cat((phase_mask.real, phase_mask.imag), dim=2)
+        #     torchvision.utils.save_image(phases, f'{wafer_output_path[:-4]}_phase.png')
+        #     # torchvision.utils.save_image(kernels.mean(dim=0, keepdim=True).real, f'{wafer_output_path[:-4]}_kernels.png')
     # ============================================
 
     complex_image_data = frequency_multiplication(complex_image_data, kernels) # N * K * H * W (complex)
+    # print(6, torch.std(complex_image_data))
+    # print(3, complex_image_data.grad_fn)
     complex_image_data = ifft2(complex_image_data) # N * K * H * W (complex)
     intensity_map = tensor_weight_sum(complex_image_data, weight) # N * 1 * H * W (real)
+    # print(7, torch.std(intensity_map))
+    # print(4, intensity_map.grad_fn)
 
     if avgpool_size is not None:
         avg_layer = torch.nn.AvgPool2d(
@@ -267,10 +300,11 @@ def lithosim(image_data, threshold, kernels, weight, wafer_output_path, save_bin
     binary_wafer = None  # If return_binary_wafer == False, can save GPU memory
     if return_binary_wafer:
         binary_wafer = mask_threshold(intensity_map, threshold)
+    # print(5, binary_wafer.grad_fn)
 
     if save_bin_wafer_image == True:
         torchvision.utils.save_image(binary_wafer, wafer_output_path)
-        print("Save binary wafer image in %s" % wafer_output_path)
+        # print("Save binary wafer image in %s" % wafer_output_path)
     return intensity_map, binary_wafer
 
 def convolve_kernel(image_data, kernels, weight, dose=1, combo_kernel=True):

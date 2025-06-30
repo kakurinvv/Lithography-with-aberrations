@@ -13,6 +13,7 @@ parser.add_argument('--output_root', type=str,
                     default='../output/litho_output')
 parser.add_argument('--kernel_num', type=int, default=24, help='24 SOCS kernels')
 parser.add_argument('--device_id', type=int, default=0, help='GPU device id')
+parser.add_argument('--threshold', type=float, default=0.225, help='Resist threshold')
 args = parser.parse_args()
 
 
@@ -35,7 +36,7 @@ def run_litho_sim_batch():
     if not os.path.exists(output_root):
         os.makedirs(output_root)
 
-    threshold = 0.225
+    threshold = args.threshold
     kernels_path = os.path.join(
         torch_data_path, 'kernel_' + litho_kernel_type + '_tensor.pt')
     weight_path = os.path.join(
@@ -57,9 +58,9 @@ def run_litho_sim_batch():
                 save_name = os.path.join(output_root, name)
                 image_data = litho.load_image(png_file)
                 image_data = image_data.to(device)
-                print("------ Start lithography simulation for %s ------" % name)
+                # print("------ Start lithography simulation for %s ------" % name)
                 _, _ = litho.lithosim(image_data, threshold, kernels, weight, save_name, save_bin_wafer_image, kernel_number)
-                print("------ Finish! ------\n")
+                # print("------ Finish! ------\n")
     print("------ Done! ------")
 
 if __name__ == "__main__":

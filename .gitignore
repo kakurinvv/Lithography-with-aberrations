@@ -4,3 +4,6 @@ neural-ilt/lithosim/lithosim_kernels/
 neural-ilt/output/
 neural-ilt/models/
 neural-ilt/dataset/
+*.zip
+model/dataset/
+neural-ilt/lithosim/tb_logs/
