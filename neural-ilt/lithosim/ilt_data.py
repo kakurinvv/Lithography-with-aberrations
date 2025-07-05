@@ -42,7 +42,8 @@ class PNGFolderDataset(Dataset):
         aberrated_img = self.sim.run_lithosim(layout_img, zernike_coeffs=zernike_coeffs)
         # print(14, torch.std(self.sim.kernels))
 
-        imgs = torch.cat([litho_img, aberrated_img], dim=0).squeeze(1) # 2 x H x W
+        # imgs = torch.cat([litho_img, aberrated_img], dim=0).squeeze(1) # 2 x H x W
+        imgs = torch.cat([layout_img.unsqueeze(1), aberrated_img], dim=0).squeeze(1) # 2 x H x W
         
         return imgs, zernike_coeffs
     
