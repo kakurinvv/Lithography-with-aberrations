@@ -8,8 +8,11 @@ import torch
 import torch.fft
 import torchvision
 from torchvision.transforms import Compose, ToTensor, Grayscale
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, message='Torchinductor does not support code generation for complex operators. Performance may be worse than eager.')
 
 
+@torch.compile
 def generate_zernike_phase(shape, coeffs, device='cpu'):
     """
     shape: (H, W)
@@ -157,6 +160,7 @@ def load_image(image_path):
     image = transforms(image)
     return image  # N * 1 * H * W
 
+@torch.compile
 def tensor_real_to_complex(tensor, dose=1.0):
     r"""
     Convert real tensor to complex tensor, zero is filled in maginary part
@@ -168,6 +172,7 @@ def tensor_real_to_complex(tensor, dose=1.0):
     return torch.view_as_complex(complex_image_data) # N * 1 * H * W or 1 * H * W (complex)
 
 
+@torch.compile
 def frequency_multiplication(data, kernels):
     r"""
     Multiplication between data and kernels in freq-domain
@@ -203,6 +208,7 @@ def frequency_multiplication(data, kernels):
 
     return data_new
 
+@torch.compile
 def tensor_weight_sum(data, weight, square_root=False, normalized_weight=False):
     r"""
     Convert complex data to real data and do weighted sum
@@ -226,6 +232,7 @@ def tensor_weight_sum(data, weight, square_root=False, normalized_weight=False):
     else:
         return (squeeze_data * weight).sum(dim=-3, keepdim=True) # return tensor's shape is N * 1 * H * W (real)
 
+@torch.compile
 def mask_threshold(intensity_map, threshold):
     r"""
     Intensity map to binary wafer
@@ -307,6 +314,7 @@ def lithosim(image_data, threshold, kernels, weight, wafer_output_path, save_bin
         # print("Save binary wafer image in %s" % wafer_output_path)
     return intensity_map, binary_wafer
 
+@torch.compile
 def convolve_kernel(image_data, kernels, weight, dose=1, combo_kernel=True):
     r"""
     Calculation of convolve(image_data, kernels)
@@ -348,6 +356,7 @@ def convolve_kernel(image_data, kernels, weight, dose=1, combo_kernel=True):
 
     return complex_image_data # N * 1 * H * W (complex)
 
+@torch.compile
 def frequency_multiplication_combo(data, kernels, weight):
     r"""
     Pre-computed kernel combinations for acceleration, from MOSAIC (GAO et al., DAC'14)
@@ -359,12 +368,14 @@ def frequency_multiplication_combo(data, kernels, weight):
 
 # FFT functions (From FacebookAIResearch)
 # https://github.com/facebookresearch/fastMRI/blob/master/banding_removal/fastmri/data/transforms.py
+@torch.compile
 def fft2(data):
     data = torch.fft.ifftshift(data, dim=(-2, -1))
     data = torch.fft.fftn(data, dim=[-1,-2])
     data = torch.fft.fftshift(data, dim=(-2, -1))
     return data
 
+@torch.compile
 def ifft2(data):
     data = torch.fft.ifftshift(data, dim=(-2, -1))
     data = torch.fft.ifftn(data, dim=[-1,-2])

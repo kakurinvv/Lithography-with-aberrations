@@ -15,7 +15,7 @@ class PNGFolderDataset(Dataset):
                     self.filenames.append(os.path.join(path, name))
         self.filenames.sort()
         self.transform = transform or transforms.Compose([
-            transforms.Resize((image_size, image_size)),
+            torch.compile(transforms.Resize((image_size, image_size))),
         ])
 
         self.sim = LTSimulator(device=device)
@@ -29,21 +29,15 @@ class PNGFolderDataset(Dataset):
 
     def __getitem__(self, idx):
         img_path = self.filenames[idx]
-        layout_img = litho.load_image(img_path).to(self.device)
-        # print(layout_img.dtype, layout_img)
+        design_img = litho.load_image(img_path).to(self.device)
         if self.transform is not None:
-            layout_img = self.transform(layout_img)
+            design_img = self.transform(design_img)
 
-        # print(11, torch.std(self.sim.kernels))
-        litho_img = self.sim.run_lithosim(layout_img)
-        # print(12, torch.std(self.sim.kernels))
+        litho_img = self.sim.run_lithosim(design_img)
         zernike_coeffs = (torch.rand(self.N_zernike, device=litho_img.device) - 0.5) * 2 * self.aberr_max
-        # print(13, torch.std(self.sim.kernels))
-        aberrated_img = self.sim.run_lithosim(layout_img, zernike_coeffs=zernike_coeffs)
-        # print(14, torch.std(self.sim.kernels))
+        aberrated_img = self.sim.run_lithosim(design_img, zernike_coeffs=zernike_coeffs)
 
-        # imgs = torch.cat([litho_img, aberrated_img], dim=0).squeeze(1) # 2 x H x W
-        imgs = torch.cat([layout_img.unsqueeze(1), aberrated_img], dim=0).squeeze(1) # 2 x H x W
+        imgs = torch.cat([design_img.unsqueeze(1), litho_img, aberrated_img], dim=0).squeeze(1) # 3 x H x W
         
         return imgs, zernike_coeffs
     

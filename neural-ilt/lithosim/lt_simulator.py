@@ -1,10 +1,11 @@
 import lithosim_cuda as litho
 import os, argparse
 import torch
+import torch.utils.checkpoint as cp
 
     
 class LTSimulator(torch.nn.Module):
-    def __init__(self, device: str = None):
+    def __init__(self, device: str = None, checkpointing: bool = False):
         super().__init__()
         parser = argparse.ArgumentParser(description='take parameters')
         parser.add_argument('--kernels_root', type=str,
@@ -28,6 +29,8 @@ class LTSimulator(torch.nn.Module):
         self.kernels = kernels
         # print(torch.std(self.kernels))
         self.weights = weights
+        
+        self.checkpointing = checkpointing
     
     def load_kernels_weights(self):
         kernels_root = self.config.kernels_root
@@ -64,6 +67,16 @@ class LTSimulator(torch.nn.Module):
             weights = self.weights.clone().to(device=image_data.device)
         # print('kernels', image_data.device, torch.std(self.kernels))
         
-        intensity_map, binary_wafer = litho.lithosim(image_data, threshold, kernels, weights, save_name, save_bin_wafer_image,
+        # runner = checkpoint(litho.lithosim, use_reentrant=False) if self.checkpointing else litho.lithosim
+        if self.checkpointing:
+            def run_func(x):
+                return litho.lithosim(x, threshold, kernels, weights, save_name, save_bin_wafer_image,
                                         kernel_number, zernike_coeffs=zernike_coeffs)
+            intensity_map, binary_wafer = cp.checkpoint(run_func, image_data, use_reentrant=False)
+        else:
+            intensity_map, binary_wafer =  litho.lithosim(image_data, threshold, kernels, weights, save_name, save_bin_wafer_image,
+                                        kernel_number, zernike_coeffs=zernike_coeffs)
+
+        # intensity_map, binary_wafer = litho.lithosim(image_data, threshold, kernels, weights, save_name, save_bin_wafer_image,
+        #                                 kernel_number, zernike_coeffs=zernike_coeffs)
         return intensity_map#.squeeze(1) # N x H x W
