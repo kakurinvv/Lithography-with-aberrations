@@ -1,20 +1,13 @@
-import os
 import torch
-from torch.utils.data import Dataset, DataLoader
 import torch.utils.checkpoint as cp
-from torchvision import transforms
-from torchvision.transforms import functional as TF
-from PIL import Image
-import numpy as np
-from pytorch_lightning import LightningModule, Trainer
-from efficientnet_pytorch import EfficientNet
+from pytorch_lightning import LightningModule
 import torchvision.models as models
 from lt_simulator import LTSimulator
 
 # -------- 2. Model --------
 @torch.compile#(backend='cudagraphs')
 class LithoZernikeRegressor(LightningModule):
-    def __init__(self, model_name='efficientnet_b0', num_zernike=6, lr=1e-3, checkpointing: bool = True):
+    def __init__(self, model_name='efficientnet_b0', num_zernike=6, lr=1e-3, checkpointing: bool = False):
         super().__init__()
         self.save_hyperparameters()
         
@@ -40,7 +33,7 @@ class LithoZernikeRegressor(LightningModule):
         design_imgs, litho_imgs, aberr_imgs = torch.split(imgs, 1, dim=1) # [B, 3, H, W] -> [B, (1, 1, 1), H, W]
         
         modelled_imgs = self.sim.run_lithosim(design_imgs, zernike_coeffs=z_preds)
-        loss = self.loss_func(modelled_imgs, aberr_imgs, reduction='mean')
+        loss = self.loss_func(modelled_imgs, aberr_imgs)
 
         self.log('train_loss', loss, prog_bar=True)
         return loss
@@ -52,7 +45,7 @@ class LithoZernikeRegressor(LightningModule):
         design_imgs, litho_imgs, aberr_imgs = torch.split(imgs, 1, dim=1) # [B, 3, H, W] -> [B, (1, 1, 1), H, W]
         
         modelled_imgs = self.sim.run_lithosim(design_imgs, zernike_coeffs=z_preds)
-        loss = self.loss_func(modelled_imgs, aberr_imgs, reduction='mean')
+        loss = self.loss_func(modelled_imgs, aberr_imgs)
 
         self.log('val_loss', loss, prog_bar=True)
         return loss
@@ -73,6 +66,63 @@ class LithoZernikeRegressor(LightningModule):
             mean_grad = sum(grads) / len(grads)
             self.log('mean_grad', mean_grad, prog_bar=True, logger=True)
 
+
+@torch.compile#(backend='cudagraphs')
+class DualLithoZernikeRegressor(LithoZernikeRegressor):
+    def __init__(self, model_name='efficientnet_b0', num_zernike=6, lr=1e-3, checkpointing: bool = False, rev_weight: float = 1.):
+        super().__init__(model_name, num_zernike, lr, checkpointing)
+        self.save_hyperparameters()
+        
+        self.sim = LTSimulator(checkpointing=checkpointing)
+        self.backbone = get_backbone(model_name, in_chans=2, num_classes=num_zernike*2)
+
+        self.loss_func = torch.nn.functional.l1_loss
+        self.num_zernike = num_zernike
+        self.checkpointing = checkpointing
+        self.rev_weight = rev_weight
+
+
+    def forward(self, x):
+        if self.checkpointing:
+            def run_func(input):
+                return torch.split(self.backbone(input), self.num_zernike, dim=-1)
+            return cp.checkpoint(run_func, x, use_reentrant=False)
+        else:
+            return torch.split(self.backbone(x), self.num_zernike, dim=-1)
+
+    def training_step(self, batch, batch_idx):
+        imgs, z_true = batch
+        litho_aberr_imgs = imgs[:, 1:] # skip design images
+
+        z_preds, z_rev_preds = self(litho_aberr_imgs)
+        design_imgs, litho_imgs, aberr_imgs = torch.split(imgs, 1, dim=1) # [B, 3, H, W] -> [B, (1, 1, 1), H, W]
+        
+        modelled_imgs = self.sim.run_lithosim(design_imgs, zernike_coeffs=z_preds)
+        modelling_loss = self.loss_func(modelled_imgs, aberr_imgs)
+
+        reconstructed_imgs = self.sim.run_lithosim(aberr_imgs, zernike_coeffs=z_rev_preds)
+        reconstruction_loss = self.loss_func(reconstructed_imgs, litho_imgs)
+
+        loss = modelling_loss + reconstruction_loss * self.rev_weight
+        self.log('train_loss', loss, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        imgs, z_true = batch
+        litho_aberr_imgs = imgs[:, 1:] # skip design images
+
+        z_preds, z_rev_preds = self(litho_aberr_imgs)
+        design_imgs, litho_imgs, aberr_imgs = torch.split(imgs, 1, dim=1) # [B, 3, H, W] -> [B, (1, 1, 1), H, W]
+        
+        modelled_imgs = self.sim.run_lithosim(design_imgs, zernike_coeffs=z_preds)
+        modelling_loss = self.loss_func(modelled_imgs, aberr_imgs)
+
+        reconstructed_imgs = self.sim.run_lithosim(aberr_imgs, zernike_coeffs=z_rev_preds)
+        reconstruction_loss = self.loss_func(reconstructed_imgs, litho_imgs)
+
+        loss = modelling_loss + reconstruction_loss * self.rev_weight
+        self.log('val_loss', loss, prog_bar=True)
+        return loss
 
 # @torch.compile
 def litho_loss(pred, true, threshold=0.225, margin: float = 0.1, power: float = 2.):
