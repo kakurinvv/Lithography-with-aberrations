@@ -8,9 +8,9 @@ parser.add_argument('--kernels_root', type=str,
                     default='lithosim_kernels/bin_data')
 parser.add_argument('--kernel_type', type=str,
                     default='focus', help='[focus] or [defocus]')
-parser.add_argument('--input_root', type=str, default='../output/refine_net_output/')
+parser.add_argument('--input_root', type=str, default='../dataset/input/')
 parser.add_argument('--output_root', type=str,
-                    default='../output/refine_litho_out')
+                    default='../output/litho_output')
 parser.add_argument('--kernel_num', type=int, default=24, help='24 SOCS kernels')
 parser.add_argument('--device_id', type=int, default=0, help='GPU device id')
 args = parser.parse_args()
