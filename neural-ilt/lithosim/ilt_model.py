@@ -3,19 +3,22 @@ import torch.utils.checkpoint as cp
 from pytorch_lightning import LightningModule
 import torchvision.models as models
 from lt_simulator import LTSimulator
+from transformers import get_linear_schedule_with_warmup
 
 # -------- 2. Model --------
 @torch.compile#(backend='cudagraphs')
 class LithoZernikeRegressor(LightningModule):
-    def __init__(self, model_name='efficientnet_b0', num_zernike=6, lr=1e-3, checkpointing: bool = False):
+    def __init__(self, model_name='efficientnet_b0', num_zernike=6, lr=1e-3, checkpointing: bool = False, warmup_steps=500):        
         super().__init__()
         self.save_hyperparameters()
-        
+
         self.sim = LTSimulator(checkpointing=checkpointing)
         self.backbone = get_backbone(model_name, in_chans=2, num_classes=num_zernike)
 
         self.loss_func = torch.nn.functional.l1_loss
         self.checkpointing = checkpointing
+        self.warmup_steps = warmup_steps
+
 
 
     def forward(self, x):
@@ -51,7 +54,14 @@ class LithoZernikeRegressor(LightningModule):
         return loss
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.hparams.lr)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr)
+        total_steps = self.trainer.estimated_stepping_batches
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=self.warmup_steps,
+            num_training_steps=total_steps
+        )
+        return [optimizer], [{'scheduler': scheduler, 'interval': 'step', 'frequency': 1}]
     
     def on_after_backward(self):
         # self.parameters() только с requires_grad
@@ -69,10 +79,10 @@ class LithoZernikeRegressor(LightningModule):
 
 @torch.compile#(backend='cudagraphs')
 class DualLithoZernikeRegressor(LithoZernikeRegressor):
-    def __init__(self, model_name='efficientnet_b0', num_zernike=6, lr=1e-3, checkpointing: bool = False, rev_weight: float = 1.):
-        super().__init__(model_name, num_zernike, lr, checkpointing)
+    def __init__(self, model_name='efficientnet_b0', num_zernike=6, lr=1e-3, checkpointing: bool = False, warmup_steps=500, rev_weight: float = 10.):
+        super().__init__(model_name, num_zernike, lr, checkpointing, warmup_steps)
         self.save_hyperparameters()
-        
+
         self.sim = LTSimulator(checkpointing=checkpointing)
         self.backbone = get_backbone(model_name, in_chans=2, num_classes=num_zernike*2)
 
@@ -80,6 +90,7 @@ class DualLithoZernikeRegressor(LithoZernikeRegressor):
         self.num_zernike = num_zernike
         self.checkpointing = checkpointing
         self.rev_weight = rev_weight
+        
 
 
     def forward(self, x):
@@ -91,6 +102,7 @@ class DualLithoZernikeRegressor(LithoZernikeRegressor):
             return torch.split(self.backbone(x), self.num_zernike, dim=-1)
 
     def training_step(self, batch, batch_idx):
+        # print("Input device:", batch[0].device, "Model device:", next(self.parameters()).device)
         imgs, z_true = batch
         litho_aberr_imgs = imgs[:, 1:] # skip design images
 
@@ -102,12 +114,16 @@ class DualLithoZernikeRegressor(LithoZernikeRegressor):
 
         reconstructed_imgs = self.sim.run_lithosim(aberr_imgs, zernike_coeffs=z_rev_preds)
         reconstruction_loss = self.loss_func(reconstructed_imgs, litho_imgs)
+        zernike_loss = torch.nn.functional.mse_loss(z_preds, z_true)
 
-        loss = modelling_loss + reconstruction_loss * self.rev_weight
+        loss = modelling_loss + reconstruction_loss * self.rev_weight + zernike_loss
+        self.log_dict({'modelling_loss': modelling_loss, 'reconstruction_loss': reconstruction_loss,
+                 'zernike_loss': zernike_loss, 'lr': self.lr_schedulers().get_last_lr()[0]})
         self.log('train_loss', loss, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
+        # print("Input device:", batch[0].device, "Model device:", next(self.parameters()).device)
         imgs, z_true = batch
         litho_aberr_imgs = imgs[:, 1:] # skip design images
 
@@ -119,8 +135,11 @@ class DualLithoZernikeRegressor(LithoZernikeRegressor):
 
         reconstructed_imgs = self.sim.run_lithosim(aberr_imgs, zernike_coeffs=z_rev_preds)
         reconstruction_loss = self.loss_func(reconstructed_imgs, litho_imgs)
+        zernike_loss = torch.nn.functional.mse_loss(z_preds, z_true)
 
-        loss = modelling_loss + reconstruction_loss * self.rev_weight
+        loss = modelling_loss + reconstruction_loss * self.rev_weight + zernike_loss
+        self.log_dict({'val_modelling_loss': modelling_loss, 'val_reconstruction_loss': reconstruction_loss,
+                 'val_zernike_loss': zernike_loss})
         self.log('val_loss', loss, prog_bar=True)
         return loss
 

@@ -12,7 +12,7 @@ import warnings
 warnings.filterwarnings('ignore', category=UserWarning, message='Torchinductor does not support code generation for complex operators. Performance may be worse than eager.')
 
 
-@torch.compile
+# @torch.compile
 def generate_zernike_phase(shape, coeffs, device='cpu'):
     """
     shape: (H, W)
@@ -28,34 +28,52 @@ def generate_zernike_phase(shape, coeffs, device='cpu'):
     N = len(coeffs)
     Z = torch.zeros_like(r)[None,:].repeat_interleave(N, 0) # N x H x W
     
-    def zernike(n, m, r, theta):
-        # Простейшие Цернике: нечеткая имитация
-        if m == 0:
-            return r**n
-        elif m > 0:
-            return torch.cos(m * theta) * r**n
+    def zernike_polynomial(n, m):
+        """Генерирует полином Цернике Z_n^m"""
+        mask = (r <= 1).float()
+
+        R = torch.zeros_like(r)
+        for k in range((n - abs(m)) // 2 + 1):
+            coef = ((-1)**k * math.factorial(n - k) /
+                (math.factorial(k) *
+                    math.factorial((n + abs(m))//2 - k) *
+                    math.factorial((n - abs(m))//2 - k)))
+            R += coef * r**(n - 2*k)
+
+        if m > 0:
+            z = R * torch.cos(m * theta)
+        elif m < 0:
+            z = R * torch.sin(abs(m) * theta)
         else:
-            return torch.sin(-m * theta) * r**n
+            z = R
+
+        return z * mask
 
     # Пример — вручную добавим несколько низших порядков
     n_m_list = [
-        (0, 0),  # Z0
-        (1, -1), # Z1
-        (1, 1),  # Z2
-        (2, -2), # Z3
-        (2, 0),  # Z4
-        (2, 2),  # Z5
+        (0,0),    # Z0
+        (1,-1),   # Z1
+        (1,1),    # Z2
+        (2,-2),   # Z3
+        (2,0),    # Z4
+        (2,2),    # Z5
+        (3,-3),   # Z6
+        (3,-1),   # Z7
+        (3,1),    # Z8
+        (3,3),    # Z9
+        (4,0),    # Z10
+        (4,2),    # Z11
+        (4,-2),   # Z12
+        (4,4),    # Z13
+        (4,-4)    # Z14
     ]
-    for i, a in enumerate(coeffs.T):
+
+    for i, coeff in enumerate(coeffs.T):
         if i >= len(n_m_list):
             break
         n, m = n_m_list[i]
-        try:
-            Z += a[:, None, None] * zernike(n, m, r, theta)
-        except:
-            print(a, zernike(n, m, r, theta).shape, Z.shape)
-            assert False
-    
+        Z += coeff[:, None, None] * zernike_polynomial(n, m)
+
     return Z
 
 
@@ -160,7 +178,7 @@ def load_image(image_path):
     image = transforms(image)
     return image  # N * 1 * H * W
 
-@torch.compile
+# @torch.compile
 def tensor_real_to_complex(tensor, dose=1.0):
     r"""
     Convert real tensor to complex tensor, zero is filled in maginary part
@@ -172,7 +190,7 @@ def tensor_real_to_complex(tensor, dose=1.0):
     return torch.view_as_complex(complex_image_data) # N * 1 * H * W or 1 * H * W (complex)
 
 
-@torch.compile
+# @torch.compile
 def frequency_multiplication(data, kernels):
     r"""
     Multiplication between data and kernels in freq-domain
@@ -208,7 +226,7 @@ def frequency_multiplication(data, kernels):
 
     return data_new
 
-@torch.compile
+# @torch.compile
 def tensor_weight_sum(data, weight, square_root=False, normalized_weight=False):
     r"""
     Convert complex data to real data and do weighted sum
@@ -232,7 +250,7 @@ def tensor_weight_sum(data, weight, square_root=False, normalized_weight=False):
     else:
         return (squeeze_data * weight).sum(dim=-3, keepdim=True) # return tensor's shape is N * 1 * H * W (real)
 
-@torch.compile
+# @torch.compile
 def mask_threshold(intensity_map, threshold):
     r"""
     Intensity map to binary wafer
@@ -314,7 +332,7 @@ def lithosim(image_data, threshold, kernels, weight, wafer_output_path, save_bin
         # print("Save binary wafer image in %s" % wafer_output_path)
     return intensity_map, binary_wafer
 
-@torch.compile
+# @torch.compile
 def convolve_kernel(image_data, kernels, weight, dose=1, combo_kernel=True):
     r"""
     Calculation of convolve(image_data, kernels)
@@ -368,14 +386,14 @@ def frequency_multiplication_combo(data, kernels, weight):
 
 # FFT functions (From FacebookAIResearch)
 # https://github.com/facebookresearch/fastMRI/blob/master/banding_removal/fastmri/data/transforms.py
-@torch.compile
+# @torch.compile
 def fft2(data):
     data = torch.fft.ifftshift(data, dim=(-2, -1))
     data = torch.fft.fftn(data, dim=[-1,-2])
     data = torch.fft.fftshift(data, dim=(-2, -1))
     return data
 
-@torch.compile
+# @torch.compile
 def ifft2(data):
     data = torch.fft.ifftshift(data, dim=(-2, -1))
     data = torch.fft.ifftn(data, dim=[-1,-2])
