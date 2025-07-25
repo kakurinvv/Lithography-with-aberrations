@@ -12,7 +12,6 @@ import warnings
 warnings.filterwarnings('ignore', category=UserWarning, message='Torchinductor does not support code generation for complex operators. Performance may be worse than eager.')
 
 
-# @torch.compile
 def generate_zernike_phase(shape, coeffs, device='cpu'):
     """
     shape: (H, W)
@@ -178,7 +177,6 @@ def load_image(image_path):
     image = transforms(image)
     return image  # N * 1 * H * W
 
-# @torch.compile
 def tensor_real_to_complex(tensor, dose=1.0):
     r"""
     Convert real tensor to complex tensor, zero is filled in maginary part
@@ -186,11 +184,9 @@ def tensor_real_to_complex(tensor, dose=1.0):
     real_tensor = tensor.unsqueeze(-1) * dose
     image_tensor = torch.zeros_like(real_tensor) * dose
     complex_image_data = torch.cat((real_tensor, image_tensor), -1)
-    # complex_image_data = torch.view_as_complex(complex_image_data)
     return torch.view_as_complex(complex_image_data) # N * 1 * H * W or 1 * H * W (complex)
 
 
-# @torch.compile
 def frequency_multiplication(data, kernels):
     r"""
     Multiplication between data and kernels in freq-domain
@@ -210,13 +206,6 @@ def frequency_multiplication(data, kernels):
     x1 = x0 + kernel_width
     y1 = y0 + kernel_height
 
-    # Except image's center, set other value as zero
-    # with torch.no_grad():
-    #     data[..., :y0, :] = 0.0
-    #     data[..., y1:, :] = 0.0
-    #     data[..., y0:y1, :x0] = 0.0
-    #     data[..., y0:y1, x1:] = 0.0
-
     # Data dimension expand to 24
     data = data.repeat_interleave(ker_num, dim=-3)  # N * K * H * W (complex)
     data_new = torch.zeros_like(data)
@@ -226,7 +215,6 @@ def frequency_multiplication(data, kernels):
 
     return data_new
 
-# @torch.compile
 def tensor_weight_sum(data, weight, square_root=False, normalized_weight=False):
     r"""
     Convert complex data to real data and do weighted sum
@@ -250,7 +238,6 @@ def tensor_weight_sum(data, weight, square_root=False, normalized_weight=False):
     else:
         return (squeeze_data * weight).sum(dim=-3, keepdim=True) # return tensor's shape is N * 1 * H * W (real)
 
-# @torch.compile
 def mask_threshold(intensity_map, threshold):
     r"""
     Intensity map to binary wafer
@@ -280,41 +267,25 @@ def lithosim(image_data, threshold, kernels, weight, wafer_output_path, save_bin
             weight = weight[:kernels_number]
     complex_image_data = tensor_real_to_complex(image_data, dose=dose) # N * 1 * H * W (complex)
     complex_image_data = fft2(complex_image_data) # N * 1 * H * W (complex)
-    # print(1, torch.std(complex_image_data))
-    # print(1, complex_image_data.grad_fn)
     
     kernels = kernels.unsqueeze(0) # 1 x K x H x W
-    # print(2, kernels)
 
     # ======= фазовая маска через Цернике ========
-    # zernike_coeffs=[0, 0, 0, 0, 0, 0]
     if zernike_coeffs is not None:
         if len(zernike_coeffs.shape) == 1:
             zernike_coeffs = zernike_coeffs.unsqueeze(0) # 1 x N_Z
-        # print(3, torch.std(zernike_coeffs))
 
         _, K, H, W = kernels.shape
         device = kernels.device
         phase = generate_zernike_phase((H, W), zernike_coeffs, device=device)
         phase_mask = torch.exp(1j * phase)  # N x H x W (complex)
-        # print(4, torch.std(phase_mask))
         phase_mask = phase_mask.unsqueeze(1)  # N x 1 x H x W
         kernels = kernels * phase_mask  # broadcasting to N x K x H x W
-        # print(5, kernels, phase_mask, sep='\n')
-        # print(2, kernels.grad_fn)
-        # if save_bin_wafer_image == True:
-        #     phases = torch.cat((phase_mask.real, phase_mask.imag), dim=2)
-        #     torchvision.utils.save_image(phases, f'{wafer_output_path[:-4]}_phase.png')
-        #     # torchvision.utils.save_image(kernels.mean(dim=0, keepdim=True).real, f'{wafer_output_path[:-4]}_kernels.png')
     # ============================================
 
     complex_image_data = frequency_multiplication(complex_image_data, kernels) # N * K * H * W (complex)
-    # print(6, torch.std(complex_image_data))
-    # print(3, complex_image_data.grad_fn)
     complex_image_data = ifft2(complex_image_data) # N * K * H * W (complex)
     intensity_map = tensor_weight_sum(complex_image_data, weight) # N * 1 * H * W (real)
-    # print(7, torch.std(intensity_map))
-    # print(4, intensity_map.grad_fn)
 
     if avgpool_size is not None:
         avg_layer = torch.nn.AvgPool2d(
@@ -325,14 +296,11 @@ def lithosim(image_data, threshold, kernels, weight, wafer_output_path, save_bin
     binary_wafer = None  # If return_binary_wafer == False, can save GPU memory
     if return_binary_wafer:
         binary_wafer = mask_threshold(intensity_map, threshold)
-    # print(5, binary_wafer.grad_fn)
 
     if save_bin_wafer_image == True:
         torchvision.utils.save_image(binary_wafer, wafer_output_path)
-        # print("Save binary wafer image in %s" % wafer_output_path)
     return intensity_map, binary_wafer
 
-# @torch.compile
 def convolve_kernel(image_data, kernels, weight, dose=1, combo_kernel=True):
     r"""
     Calculation of convolve(image_data, kernels)
@@ -386,14 +354,12 @@ def frequency_multiplication_combo(data, kernels, weight):
 
 # FFT functions (From FacebookAIResearch)
 # https://github.com/facebookresearch/fastMRI/blob/master/banding_removal/fastmri/data/transforms.py
-# @torch.compile
 def fft2(data):
     data = torch.fft.ifftshift(data, dim=(-2, -1))
     data = torch.fft.fftn(data, dim=[-1,-2])
     data = torch.fft.fftshift(data, dim=(-2, -1))
     return data
 
-# @torch.compile
 def ifft2(data):
     data = torch.fft.ifftshift(data, dim=(-2, -1))
     data = torch.fft.ifftn(data, dim=[-1,-2])

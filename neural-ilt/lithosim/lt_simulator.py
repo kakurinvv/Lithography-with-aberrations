@@ -16,9 +16,9 @@ class LTSimulator(torch.nn.Module):
         parser.add_argument('--output_root', type=str,
                             default='../output/litho_output')
         parser.add_argument('--kernel_num', type=int, default=24, help='24 SOCS kernels')
-        parser.add_argument('--device_id', type=int, default=0, help='GPU device id')
+        parser.add_argument('--device_id', type=int, default=24, help='GPU device id')
         parser.add_argument('--threshold', type=float, default=0.225, help='Resist threshold')
-        # args = parser.parse_args()
+
         self.config = parser.parse_known_args()[0]
         if device is not None:
             self.device = device
@@ -27,7 +27,6 @@ class LTSimulator(torch.nn.Module):
 
         kernels, weights = self.load_kernels_weights()
         self.kernels = kernels
-        # print(torch.std(self.kernels))
         self.weights = weights
         
         self.checkpointing = checkpointing
@@ -65,9 +64,7 @@ class LTSimulator(torch.nn.Module):
         if kernels is None or weights is None:
             kernels = self.kernels.clone().to(device=image_data.device)
             weights = self.weights.clone().to(device=image_data.device)
-        # print('kernels', image_data.device, torch.std(self.kernels))
-        
-        # runner = checkpoint(litho.lithosim, use_reentrant=False) if self.checkpointing else litho.lithosim
+
         if self.checkpointing:
             def run_func(x):
                 return litho.lithosim(x, threshold, kernels, weights, save_name, save_bin_wafer_image,
@@ -77,6 +74,4 @@ class LTSimulator(torch.nn.Module):
             intensity_map, binary_wafer =  litho.lithosim(image_data, threshold, kernels, weights, save_name, save_bin_wafer_image,
                                         kernel_number, zernike_coeffs=zernike_coeffs)
 
-        # intensity_map, binary_wafer = litho.lithosim(image_data, threshold, kernels, weights, save_name, save_bin_wafer_image,
-        #                                 kernel_number, zernike_coeffs=zernike_coeffs)
-        return intensity_map#.squeeze(1) # N x H x W
+        return intensity_map

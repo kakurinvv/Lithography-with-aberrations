@@ -1,3 +1,0 @@
-lr: 0.001
-model_name: efficientnet_b0
-num_zernike: 6

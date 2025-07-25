@@ -65,7 +65,6 @@ class PNGFolderDataset(Dataset):
         return len(self.filenames)
 
     def __getitem__(self, idx):
-        # Используем RAM, если включено
         if self.load_all_to_ram and self.design_images_in_ram is not None:
             design_img = self.design_images_in_ram[idx].to(self.device, non_blocking=True)
             litho_img = self.litho_images_in_ram[idx].to(self.device, non_blocking=True)
@@ -74,7 +73,6 @@ class PNGFolderDataset(Dataset):
             design_img, litho_img = self._process_single_image(img_path)
 
         # Генерируем аберрации
-        # zernike_coeffs = (torch.rand(self.N_zernike, device=litho_img.device) - 0.5) * 2 * self.aberr_max
         zernike_coeffs = torch.randn(self.N_zernike, device=litho_img.device) * self.aberr_max / 3
         amp = torch.abs(zernike_coeffs).max()
         zernike_coeffs = (zernike_coeffs / amp)**5 * amp
